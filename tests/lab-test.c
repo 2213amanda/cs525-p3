@@ -1,8 +1,12 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include "harness/unity.h"
 #include "../src/lab.h"
 
+#ifdef TEST
+void table_test_set_full_capacity(fwd_table_t *table, size_t capacity);
+#endif
 
 void setUp(void) {
   printf("Setting up tests...\n");
@@ -903,6 +907,974 @@ void test_cidr_subnet_exact_prefix_limit(void)
     TEST_ASSERT_EQUAL_UINT8(32, out.prefix);
 }
 
+// route_parse tests
+
+/* Helper: initialize output to sentinel values. */
+static void init_route_sentinel(route_t *route)
+{
+    route->dest.addr = UINT32_C(0x12345678);
+    route->dest.prefix = 17;
+    route->gateway = UINT32_C(0xABCDEF01);
+    memset(route->dev, 'X', sizeof(route->dev));
+}
+
+/* Helper: verify that failed parsing leaves output unchanged. */
+static void assert_route_unchanged(const route_t *route)
+{
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0x12345678),
+                             route->dest.addr);
+    TEST_ASSERT_EQUAL_UINT8(17, route->dest.prefix);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0xABCDEF01),
+                             route->gateway);
+
+    for (size_t i = 0; i < DEV_NAME_LEN; i++) {
+        TEST_ASSERT_EQUAL_INT('X', route->dev[i]);
+    }
+}
+
+/* NULL arguments. */
+void test_route_parse_null_line(void)
+{
+    route_t route;
+    init_route_sentinel(&route);
+
+    TEST_ASSERT_FALSE(route_parse(NULL, &route));
+    assert_route_unchanged(&route);
+}
+
+void test_route_parse_null_output(void)
+{
+    TEST_ASSERT_FALSE(route_parse("default direct eth0", NULL));
+}
+
+void test_route_parse_both_null(void)
+{
+    TEST_ASSERT_FALSE(route_parse(NULL, NULL));
+}
+
+/* Invalid field counts. */
+void test_route_parse_empty_line(void)
+{
+    route_t route;
+    init_route_sentinel(&route);
+
+    TEST_ASSERT_FALSE(route_parse("", &route));
+    assert_route_unchanged(&route);
+}
+
+void test_route_parse_whitespace_only(void)
+{
+    route_t route;
+    init_route_sentinel(&route);
+
+    TEST_ASSERT_FALSE(route_parse(" \t \n", &route));
+    assert_route_unchanged(&route);
+}
+
+void test_route_parse_missing_gateway_and_device(void)
+{
+    route_t route;
+    init_route_sentinel(&route);
+
+    TEST_ASSERT_FALSE(route_parse("10.0.0.0/8", &route));
+    assert_route_unchanged(&route);
+}
+
+void test_route_parse_missing_device(void)
+{
+    route_t route;
+    init_route_sentinel(&route);
+
+    TEST_ASSERT_FALSE(
+        route_parse("10.0.0.0/8 10.1.0.1", &route)
+    );
+    assert_route_unchanged(&route);
+}
+
+void test_route_parse_extra_field(void)
+{
+    route_t route;
+    init_route_sentinel(&route);
+
+    TEST_ASSERT_FALSE(
+        route_parse("default direct eth0 extra", &route)
+    );
+    assert_route_unchanged(&route);
+}
+
+/* Destination parsing. */
+void test_route_parse_default_destination(void)
+{
+    route_t route;
+
+    TEST_ASSERT_TRUE(
+        route_parse("default 132.178.227.1 eno1", &route)
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(0, route.dest.addr);
+    TEST_ASSERT_EQUAL_UINT8(0, route.dest.prefix);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0x84B2E301),
+                             route.gateway);
+    TEST_ASSERT_EQUAL_STRING("eno1", route.dev);
+}
+
+void test_route_parse_valid_cidr_destination(void)
+{
+    route_t route;
+
+    TEST_ASSERT_TRUE(
+        route_parse("10.1.2.0/24 direct eth2", &route)
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0x0A010200),
+                             route.dest.addr);
+    TEST_ASSERT_EQUAL_UINT8(24, route.dest.prefix);
+    TEST_ASSERT_EQUAL_UINT32(0, route.gateway);
+    TEST_ASSERT_EQUAL_STRING("eth2", route.dev);
+}
+
+void test_route_parse_invalid_cidr_destination(void)
+{
+    route_t route;
+    init_route_sentinel(&route);
+
+    TEST_ASSERT_FALSE(
+        route_parse("10.0.0.0/33 direct eth0", &route)
+    );
+    assert_route_unchanged(&route);
+}
+
+void test_route_parse_destination_with_host_bits_set(void)
+{
+    route_t route;
+    init_route_sentinel(&route);
+
+    TEST_ASSERT_FALSE(
+        route_parse("10.0.0.1/24 direct eth0", &route)
+    );
+    assert_route_unchanged(&route);
+}
+
+/* Gateway parsing. */
+void test_route_parse_direct_gateway(void)
+{
+    route_t route;
+
+    TEST_ASSERT_TRUE(
+        route_parse("192.168.0.0/16 direct eth1", &route)
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(0, route.gateway);
+    TEST_ASSERT_EQUAL_STRING("eth1", route.dev);
+}
+
+void test_route_parse_valid_ip_gateway(void)
+{
+    route_t route;
+
+    TEST_ASSERT_TRUE(
+        route_parse("10.0.0.0/8 10.1.0.1 eth1", &route)
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0x0A010001),
+                             route.gateway);
+    TEST_ASSERT_EQUAL_STRING("eth1", route.dev);
+}
+
+void test_route_parse_invalid_gateway(void)
+{
+    route_t route;
+    init_route_sentinel(&route);
+
+    TEST_ASSERT_FALSE(
+        route_parse("10.0.0.0/8 300.1.1.1 eth0", &route)
+    );
+    assert_route_unchanged(&route);
+}
+
+/* Device validation. */
+void test_route_parse_empty_device_missing_field(void)
+{
+    route_t route;
+    init_route_sentinel(&route);
+
+    TEST_ASSERT_FALSE(
+        route_parse("10.0.0.0/8 direct", &route)
+    );
+    assert_route_unchanged(&route);
+}
+
+void test_route_parse_device_too_long(void)
+{
+    route_t route;
+    init_route_sentinel(&route);
+
+    TEST_ASSERT_FALSE(
+        route_parse(
+            "10.0.0.0/8 direct abcdefghijklmnop",
+            &route
+        )
+    );
+    assert_route_unchanged(&route);
+}
+
+/* Whitespace handling. */
+void test_route_parse_leading_and_trailing_whitespace(void)
+{
+    route_t route;
+
+    TEST_ASSERT_TRUE(
+        route_parse(
+            " \t10.0.0.0/8\t direct   eth1 \n",
+            &route
+        )
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0x0A000000),
+                             route.dest.addr);
+    TEST_ASSERT_EQUAL_UINT8(8, route.dest.prefix);
+    TEST_ASSERT_EQUAL_UINT32(0, route.gateway);
+    TEST_ASSERT_EQUAL_STRING("eth1", route.dev);
+}
+
+// table_create tests
+
+void test_table_create_success(void)
+{
+    fwd_table_t *table = table_create();
+
+    TEST_ASSERT_NOT_NULL(table);
+
+    /* A newly created table should be empty. */
+    TEST_ASSERT_EQUAL_UINT(0, table_count(table));
+
+    table_destroy(table);
+}
+
+//table_destroy tests
+
+void test_table_destroy_null(void)
+{
+    /* NULL should be accepted and do nothing. */
+    table_destroy(NULL);
+}
+
+void test_table_destroy_empty_table(void)
+{
+    fwd_table_t *table = table_create();
+
+    TEST_ASSERT_NOT_NULL(table);
+
+    /* Destroy a valid table with no routes. */
+    table_destroy(table);
+}
+
+//table_count tests
+
+void test_table_count_null(void)
+{
+    TEST_ASSERT_EQUAL_UINT(0, table_count(NULL));
+}
+
+void test_table_count_empty_table(void)
+{
+    fwd_table_t *table = table_create();
+
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_EQUAL_UINT(0, table_count(table));
+
+    table_destroy(table);
+}
+
+void test_table_count_after_adding_route(void)
+{
+    fwd_table_t *table = table_create();
+    route_t route;
+
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_TRUE(
+        route_parse("10.0.0.0/8 direct eth0", &route)
+    );
+
+    TEST_ASSERT_TRUE(table_add(table, &route));
+    TEST_ASSERT_EQUAL_UINT(1, table_count(table));
+
+    table_destroy(table);
+}
+
+// table_add tests
+
+void test_table_add_null_table(void)
+{
+    route_t route;
+
+    TEST_ASSERT_TRUE(
+        route_parse("10.0.0.0/8 direct eth0", &route)
+    );
+
+    TEST_ASSERT_FALSE(table_add(NULL, &route));
+}
+
+void test_table_add_null_route(void)
+{
+    fwd_table_t *table = table_create();
+
+    TEST_ASSERT_NOT_NULL(table);
+    TEST_ASSERT_FALSE(table_add(table, NULL));
+    TEST_ASSERT_EQUAL_UINT(0, table_count(table));
+
+    table_destroy(table);
+}
+
+void test_table_add_both_null(void)
+{
+    TEST_ASSERT_FALSE(table_add(NULL, NULL));
+}
+
+void test_table_add_destination_with_host_bits(void)
+{
+    fwd_table_t *table = table_create();
+    route_t route = {
+        .dest = { .addr = UINT32_C(0x0A000001), .prefix = 24 },
+        .gateway = 0,
+        .dev = "eth0"
+    };
+
+    TEST_ASSERT_NOT_NULL(table);
+
+    /* 10.0.0.1/24 is not a network address. */
+    TEST_ASSERT_FALSE(table_add(table, &route));
+    TEST_ASSERT_EQUAL_UINT(0, table_count(table));
+
+    table_destroy(table);
+}
+
+void test_table_add_invalid_prefix_network(void)
+{
+    fwd_table_t *table = table_create();
+    route_t route = {
+        .dest = { .addr = UINT32_C(0x0A000000), .prefix = 33 },
+        .gateway = 0,
+        .dev = "eth0"
+    };
+
+    TEST_ASSERT_NOT_NULL(table);
+
+    /* A prefix greater than 32 cannot represent a valid network. */
+    TEST_ASSERT_FALSE(table_add(table, &route));
+    TEST_ASSERT_EQUAL_UINT(0, table_count(table));
+
+    table_destroy(table);
+}
+
+void test_table_add_first_route(void)
+{
+    fwd_table_t *table = table_create();
+    route_t route;
+
+    TEST_ASSERT_NOT_NULL(table);
+    TEST_ASSERT_TRUE(
+        route_parse("10.0.0.0/8 direct eth0", &route)
+    );
+
+    /* Exercises the initial capacity == 0 path. */
+    TEST_ASSERT_TRUE(table_add(table, &route));
+    TEST_ASSERT_EQUAL_UINT(1, table_count(table));
+
+    table_destroy(table);
+}
+
+void test_table_add_duplicate_route(void)
+{
+    fwd_table_t *table = table_create();
+    route_t first;
+    route_t duplicate;
+
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_TRUE(
+        route_parse("10.0.0.0/8 direct eth0", &first)
+    );
+    TEST_ASSERT_TRUE(
+        route_parse("10.0.0.0/8 10.1.0.1 eth1", &duplicate)
+    );
+
+    TEST_ASSERT_TRUE(table_add(table, &first));
+
+    /* Same destination and prefix, despite different gateway/device. */
+    TEST_ASSERT_FALSE(table_add(table, &duplicate));
+    TEST_ASSERT_EQUAL_UINT(1, table_count(table));
+
+    table_destroy(table);
+}
+
+void test_table_add_different_prefix_same_address(void)
+{
+    fwd_table_t *table = table_create();
+    route_t first;
+    route_t second;
+
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_TRUE(
+        route_parse("10.0.0.0/8 direct eth0", &first)
+    );
+    TEST_ASSERT_TRUE(
+        route_parse("10.0.0.0/16 direct eth1", &second)
+    );
+
+    TEST_ASSERT_TRUE(table_add(table, &first));
+    TEST_ASSERT_TRUE(table_add(table, &second));
+    TEST_ASSERT_EQUAL_UINT(2, table_count(table));
+
+    table_destroy(table);
+}
+
+void test_table_add_multiple_routes_within_capacity(void)
+{
+    fwd_table_t *table = table_create();
+    route_t route;
+
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_TRUE(
+        route_parse("10.0.0.0/8 direct eth0", &route)
+    );
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    TEST_ASSERT_TRUE(
+        route_parse("11.0.0.0/8 direct eth0", &route)
+    );
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    TEST_ASSERT_TRUE(
+        route_parse("12.0.0.0/8 direct eth0", &route)
+    );
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    TEST_ASSERT_EQUAL_UINT(3, table_count(table));
+
+    table_destroy(table);
+}
+
+void test_table_add_grows_full_table(void)
+{
+    fwd_table_t *table = table_create();
+    route_t route;
+
+    TEST_ASSERT_NOT_NULL(table);
+
+    /*
+     * The implementation starts with capacity 4.
+     * Add four routes to fill the initial allocation.
+     */
+    TEST_ASSERT_TRUE(
+        route_parse("10.0.0.0/8 direct eth0", &route)
+    );
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    TEST_ASSERT_TRUE(
+        route_parse("11.0.0.0/8 direct eth0", &route)
+    );
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    TEST_ASSERT_TRUE(
+        route_parse("12.0.0.0/8 direct eth0", &route)
+    );
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    TEST_ASSERT_TRUE(
+        route_parse("13.0.0.0/8 direct eth0", &route)
+    );
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    TEST_ASSERT_EQUAL_UINT(4, table_count(table));
+
+    /* The fifth route exercises the capacity-doubling path. */
+    TEST_ASSERT_TRUE(
+        route_parse("14.0.0.0/8 direct eth0", &route)
+    );
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    TEST_ASSERT_EQUAL_UINT(5, table_count(table));
+
+    table_destroy(table);
+}
+
+void test_table_add_capacity_doubling_overflow(void)
+{
+    fwd_table_t *table = table_create();
+    TEST_ASSERT_NOT_NULL(table);
+
+    route_t route = {0};
+    route.dest.addr = UINT32_C(0x0A000000);
+    route.dest.prefix = 8;
+    route.gateway = UINT32_C(0xC0000201);
+    strcpy(route.dev, "eth0");
+
+    table_test_set_full_capacity(table, SIZE_MAX / 2 + 1);
+
+    TEST_ASSERT_FALSE(table_add(table, &route));
+
+    table_destroy(table);
+}
+
+void test_table_add_allocation_size_overflow(void)
+{
+    fwd_table_t *table = table_create();
+    TEST_ASSERT_NOT_NULL(table);
+
+    route_t route = {0};
+    route.dest.addr = UINT32_C(0x0A000000);
+    route.dest.prefix = 8;
+    route.gateway = UINT32_C(0xC0000201);
+    strcpy(route.dev, "eth0");
+
+    size_t capacity = SIZE_MAX / (2 * sizeof(route_t)) + 1;
+
+    TEST_ASSERT_TRUE(capacity <= SIZE_MAX / 2);
+
+    table_test_set_full_capacity(table, capacity);
+
+    TEST_ASSERT_FALSE(table_add(table, &route));
+
+    table_destroy(table);
+}
+
+
+// table_load tests
+
+static FILE *make_input_file(const char *contents)
+{
+    FILE *in = tmpfile();
+
+    if (in == NULL) {
+        return NULL;
+    }
+
+    if (fputs(contents, in) == EOF) {
+        fclose(in);
+        return NULL;
+    }
+
+    rewind(in);
+    return in;
+}
+
+void test_table_load_null_table(void)
+{
+    FILE *in = make_input_file("");
+    size_t bad_line = 99;
+
+    TEST_ASSERT_NOT_NULL(in);
+
+    TEST_ASSERT_FALSE(table_load(NULL, in, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(0, bad_line);
+
+    fclose(in);
+}
+
+void test_table_load_null_file(void)
+{
+    fwd_table_t *table = table_create();
+    size_t bad_line = 99;
+
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_FALSE(table_load(table, NULL, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(0, bad_line);
+    TEST_ASSERT_EQUAL_UINT(0, table_count(table));
+
+    table_destroy(table);
+}
+
+void test_table_load_both_null(void)
+{
+    size_t bad_line = 99;
+
+    TEST_ASSERT_FALSE(table_load(NULL, NULL, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(0, bad_line);
+}
+
+void test_table_load_bad_line_pointer_null(void)
+{
+    FILE *in = make_input_file("10.0.0.0/8 direct eth0\n");
+    fwd_table_t *table = table_create();
+
+    TEST_ASSERT_NOT_NULL(in);
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_TRUE(table_load(table, in, NULL));
+    TEST_ASSERT_EQUAL_UINT(1, table_count(table));
+
+    fclose(in);
+    table_destroy(table);
+}
+
+void test_table_load_empty_file(void)
+{
+    FILE *in = make_input_file("");
+    fwd_table_t *table = table_create();
+    size_t bad_line = 99;
+
+    TEST_ASSERT_NOT_NULL(in);
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_TRUE(table_load(table, in, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(0, bad_line);
+    TEST_ASSERT_EQUAL_UINT(0, table_count(table));
+
+    fclose(in);
+    table_destroy(table);
+}
+
+void test_table_load_valid_route(void)
+{
+    FILE *in = make_input_file(
+        "10.0.0.0/8 direct eth0\n"
+    );
+    fwd_table_t *table = table_create();
+    size_t bad_line = 99;
+
+    TEST_ASSERT_NOT_NULL(in);
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_TRUE(table_load(table, in, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(0, bad_line);
+    TEST_ASSERT_EQUAL_UINT(1, table_count(table));
+
+    fclose(in);
+    table_destroy(table);
+}
+
+void test_table_load_multiple_valid_routes(void)
+{
+    FILE *in = make_input_file(
+        "default 132.178.227.1 eno1\n"
+        "10.0.0.0/8 10.1.0.1 eth1\n"
+        "10.1.0.0/16 direct eth1\n"
+    );
+    fwd_table_t *table = table_create();
+    size_t bad_line = 99;
+
+    TEST_ASSERT_NOT_NULL(in);
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_TRUE(table_load(table, in, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(0, bad_line);
+    TEST_ASSERT_EQUAL_UINT(3, table_count(table));
+
+    fclose(in);
+    table_destroy(table);
+}
+
+void test_table_load_comments_and_blank_lines(void)
+{
+    FILE *in = make_input_file(
+        "# full-line comment\n"
+        "\n"
+        "   \t  \n"
+        "10.0.0.0/8 direct eth0 # inline comment\n"
+        "   # indented comment\n"
+        "11.0.0.0/8 direct eth1\n"
+    );
+    fwd_table_t *table = table_create();
+    size_t bad_line = 99;
+
+    TEST_ASSERT_NOT_NULL(in);
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_TRUE(table_load(table, in, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(0, bad_line);
+    TEST_ASSERT_EQUAL_UINT(2, table_count(table));
+
+    fclose(in);
+    table_destroy(table);
+}
+
+void test_table_load_leading_and_trailing_whitespace(void)
+{
+    FILE *in = make_input_file(
+        " \t10.0.0.0/8   direct\teth0   \n"
+    );
+    fwd_table_t *table = table_create();
+    size_t bad_line = 99;
+
+    TEST_ASSERT_NOT_NULL(in);
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_TRUE(table_load(table, in, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(0, bad_line);
+    TEST_ASSERT_EQUAL_UINT(1, table_count(table));
+
+    fclose(in);
+    table_destroy(table);
+}
+
+void test_table_load_invalid_route_reports_line(void)
+{
+    FILE *in = make_input_file(
+        "# line 1\n"
+        "10.0.0.0/8 direct eth0\n"
+        "\n"
+        "10.1.0.1/24 direct eth1\n"
+        "11.0.0.0/8 direct eth2\n"
+    );
+    fwd_table_t *table = table_create();
+    size_t bad_line = 99;
+
+    TEST_ASSERT_NOT_NULL(in);
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_FALSE(table_load(table, in, &bad_line));
+
+    /* The invalid route is on physical line 4. */
+    TEST_ASSERT_EQUAL_UINT(4, bad_line);
+
+    /* The valid route before the error remains loaded. */
+    TEST_ASSERT_EQUAL_UINT(1, table_count(table));
+
+    fclose(in);
+    table_destroy(table);
+}
+
+void test_table_load_duplicate_route_reports_line(void)
+{
+    FILE *in = make_input_file(
+        "10.0.0.0/8 direct eth0\n"
+        "11.0.0.0/8 direct eth1\n"
+        "10.0.0.0/8 10.1.0.1 eth2\n"
+    );
+    fwd_table_t *table = table_create();
+    size_t bad_line = 99;
+
+    TEST_ASSERT_NOT_NULL(in);
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_FALSE(table_load(table, in, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(3, bad_line);
+
+    /* Both earlier routes remain; the duplicate was rejected. */
+    TEST_ASSERT_EQUAL_UINT(2, table_count(table));
+
+    fclose(in);
+    table_destroy(table);
+}
+
+void test_table_load_invalid_gateway_reports_line(void)
+{
+    FILE *in = make_input_file(
+        "10.0.0.0/8 direct eth0\n"
+        "11.0.0.0/8 300.1.1.1 eth1\n"
+    );
+    fwd_table_t *table = table_create();
+    size_t bad_line = 99;
+
+    TEST_ASSERT_NOT_NULL(in);
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_FALSE(table_load(table, in, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(2, bad_line);
+    TEST_ASSERT_EQUAL_UINT(1, table_count(table));
+
+    fclose(in);
+    table_destroy(table);
+}
+
+void test_table_load_bad_line_reset_on_success(void)
+{
+    FILE *in = make_input_file(
+        "10.0.0.0/8 direct eth0\n"
+    );
+    fwd_table_t *table = table_create();
+    size_t bad_line = 123;
+
+    TEST_ASSERT_NOT_NULL(in);
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_TRUE(table_load(table, in, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(0, bad_line);
+
+    fclose(in);
+    table_destroy(table);
+}
+
+void test_table_load_failure_resets_bad_line_for_null_arguments(void)
+{
+    size_t bad_line = 123;
+
+    TEST_ASSERT_FALSE(table_load(NULL, NULL, &bad_line));
+    TEST_ASSERT_EQUAL_UINT(0, bad_line);
+}
+
+// table_lookup tests 
+
+void test_table_lookup_null_table(void)
+{
+    uint32_t dest = UINT32_C(0x0A000001);
+
+    TEST_ASSERT_NULL(table_lookup(NULL, dest));
+}
+
+void test_table_lookup_empty_table(void)
+{
+    fwd_table_t *table = table_create();
+    TEST_ASSERT_NOT_NULL(table);
+
+    TEST_ASSERT_NULL(table_lookup(table, UINT32_C(0x0A000001)));
+
+    table_destroy(table);
+}
+
+void test_table_lookup_no_matching_route(void)
+{
+    fwd_table_t *table = table_create();
+    TEST_ASSERT_NOT_NULL(table);
+
+    route_t route;
+    TEST_ASSERT_TRUE(route_parse("10.0.0.0/8 192.0.2.1 eth0", &route));
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    /* 11.0.0.1 is outside 10.0.0.0/8. */
+    TEST_ASSERT_NULL(table_lookup(table, UINT32_C(0x0B000001)));
+
+    table_destroy(table);
+}
+
+void test_table_lookup_exact_prefix_match(void)
+{
+    fwd_table_t *table = table_create();
+    TEST_ASSERT_NOT_NULL(table);
+
+    route_t route;
+    TEST_ASSERT_TRUE(route_parse("192.168.1.0/24 192.0.2.1 eth0", &route));
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    const route_t *found =
+        table_lookup(table, UINT32_C(0xC0A80164)); /* 192.168.1.100 */
+
+    TEST_ASSERT_NOT_NULL(found);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0xC0A80100), found->dest.addr);
+    TEST_ASSERT_EQUAL_UINT8(24, found->dest.prefix);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0xC0000201), found->gateway);
+
+    table_destroy(table);
+}
+
+void test_table_lookup_longest_prefix_match(void)
+{
+    fwd_table_t *table = table_create();
+    TEST_ASSERT_NOT_NULL(table);
+
+    route_t broad;
+    route_t narrow;
+
+    TEST_ASSERT_TRUE(route_parse("10.0.0.0/8 192.0.2.1 eth0", &broad));
+    TEST_ASSERT_TRUE(route_parse("10.1.0.0/16 192.0.2.2 eth1", &narrow));
+
+    TEST_ASSERT_TRUE(table_add(table, &broad));
+    TEST_ASSERT_TRUE(table_add(table, &narrow));
+
+    const route_t *found =
+        table_lookup(table, UINT32_C(0x0A010203)); /* 10.1.2.3 */
+
+    TEST_ASSERT_NOT_NULL(found);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0x0A010000), found->dest.addr);
+    TEST_ASSERT_EQUAL_UINT8(16, found->dest.prefix);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0xC0000202), found->gateway);
+
+    table_destroy(table);
+}
+
+void test_table_lookup_longest_prefix_independent_of_insertion_order(void)
+{
+    fwd_table_t *table = table_create();
+    TEST_ASSERT_NOT_NULL(table);
+
+    route_t narrow;
+    route_t broad;
+
+    TEST_ASSERT_TRUE(route_parse("10.1.0.0/16 192.0.2.2 eth1", &narrow));
+    TEST_ASSERT_TRUE(route_parse("10.0.0.0/8 192.0.2.1 eth0", &broad));
+
+    /* Insert the more-specific route first. */
+    TEST_ASSERT_TRUE(table_add(table, &narrow));
+    TEST_ASSERT_TRUE(table_add(table, &broad));
+
+    const route_t *found =
+        table_lookup(table, UINT32_C(0x0A010203));
+
+    TEST_ASSERT_NOT_NULL(found);
+    TEST_ASSERT_EQUAL_UINT8(16, found->dest.prefix);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0xC0000202), found->gateway);
+
+    table_destroy(table);
+}
+
+void test_table_lookup_default_route(void)
+{
+    fwd_table_t *table = table_create();
+    TEST_ASSERT_NOT_NULL(table);
+
+    route_t route;
+    TEST_ASSERT_TRUE(route_parse("default 192.0.2.1 eth0", &route));
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    const route_t *found =
+        table_lookup(table, UINT32_C(0xCB007109)); /* 203.0.113.9 */
+
+    TEST_ASSERT_NOT_NULL(found);
+    TEST_ASSERT_EQUAL_UINT8(0, found->dest.prefix);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0xC0000201), found->gateway);
+
+    table_destroy(table);
+}
+
+void test_table_lookup_prefers_specific_route_over_default(void)
+{
+    fwd_table_t *table = table_create();
+    TEST_ASSERT_NOT_NULL(table);
+
+    route_t default_route;
+    route_t specific_route;
+
+    TEST_ASSERT_TRUE(route_parse("default 192.0.2.1 eth0", &default_route));
+    TEST_ASSERT_TRUE(route_parse("203.0.113.0/24 192.0.2.2 eth1", &specific_route));
+
+    TEST_ASSERT_TRUE(table_add(table, &default_route));
+    TEST_ASSERT_TRUE(table_add(table, &specific_route));
+
+    const route_t *found =
+        table_lookup(table, UINT32_C(0xCB007109)); /* 203.0.113.9 */
+
+    TEST_ASSERT_NOT_NULL(found);
+    TEST_ASSERT_EQUAL_UINT8(24, found->dest.prefix);
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0xC0000202), found->gateway);
+
+    table_destroy(table);
+}
+
+void test_table_lookup_route_for_network_address(void)
+{
+    fwd_table_t *table = table_create();
+    TEST_ASSERT_NOT_NULL(table);
+
+    route_t route;
+    TEST_ASSERT_TRUE(route_parse("172.16.0.0/12 192.0.2.1 eth0", &route));
+    TEST_ASSERT_TRUE(table_add(table, &route));
+
+    /* Query the network address itself. */
+    const route_t *found =
+        table_lookup(table, UINT32_C(0xAC100000)); /* 172.16.0.0 */
+
+    TEST_ASSERT_NOT_NULL(found);
+    TEST_ASSERT_EQUAL_UINT8(12, found->dest.prefix);
+
+    table_destroy(table);
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_ip_parse_null_text);
@@ -1001,5 +1973,64 @@ int main(void) {
     RUN_TEST(test_cidr_subnet_nonzero_index);
     RUN_TEST(test_cidr_subnet_prefix_thirty_two);
     RUN_TEST(test_cidr_subnet_exact_prefix_limit);
+    RUN_TEST(test_route_parse_null_line);
+    RUN_TEST(test_route_parse_null_output);
+    RUN_TEST(test_route_parse_both_null);
+    RUN_TEST(test_route_parse_empty_line);
+    RUN_TEST(test_route_parse_whitespace_only);
+    RUN_TEST(test_route_parse_missing_gateway_and_device);
+    RUN_TEST(test_route_parse_missing_device);
+    RUN_TEST(test_route_parse_extra_field);
+    RUN_TEST(test_route_parse_default_destination);
+    RUN_TEST(test_route_parse_valid_cidr_destination);
+    RUN_TEST(test_route_parse_invalid_cidr_destination);
+    RUN_TEST(test_route_parse_destination_with_host_bits_set);
+    RUN_TEST(test_route_parse_direct_gateway);
+    RUN_TEST(test_route_parse_valid_ip_gateway);
+    RUN_TEST(test_route_parse_invalid_gateway);
+    RUN_TEST(test_route_parse_empty_device_missing_field);
+    RUN_TEST(test_route_parse_device_too_long);
+    RUN_TEST(test_route_parse_leading_and_trailing_whitespace);
+    RUN_TEST(test_table_create_success);
+    RUN_TEST(test_table_destroy_null);
+    RUN_TEST(test_table_destroy_empty_table);
+    RUN_TEST(test_table_count_null);
+    RUN_TEST(test_table_count_empty_table);
+    RUN_TEST(test_table_count_after_adding_route);
+    RUN_TEST(test_table_add_null_table);
+    RUN_TEST(test_table_add_null_route);
+    RUN_TEST(test_table_add_both_null);
+    RUN_TEST(test_table_add_destination_with_host_bits);
+    RUN_TEST(test_table_add_invalid_prefix_network);
+    RUN_TEST(test_table_add_first_route);
+    RUN_TEST(test_table_add_duplicate_route);
+    RUN_TEST(test_table_add_different_prefix_same_address);
+    RUN_TEST(test_table_add_multiple_routes_within_capacity);
+    RUN_TEST(test_table_add_grows_full_table);
+    RUN_TEST(test_table_add_capacity_doubling_overflow);
+    RUN_TEST(test_table_add_allocation_size_overflow);
+    RUN_TEST(test_table_load_null_table);
+    RUN_TEST(test_table_load_null_file);
+    RUN_TEST(test_table_load_both_null);
+    RUN_TEST(test_table_load_bad_line_pointer_null);
+    RUN_TEST(test_table_load_empty_file);
+    RUN_TEST(test_table_load_valid_route);
+    RUN_TEST(test_table_load_multiple_valid_routes);
+    RUN_TEST(test_table_load_comments_and_blank_lines);
+    RUN_TEST(test_table_load_leading_and_trailing_whitespace);
+    RUN_TEST(test_table_load_invalid_route_reports_line);
+    RUN_TEST(test_table_load_duplicate_route_reports_line);
+    RUN_TEST(test_table_load_invalid_gateway_reports_line);
+    RUN_TEST(test_table_load_bad_line_reset_on_success);
+    RUN_TEST(test_table_load_failure_resets_bad_line_for_null_arguments);
+    RUN_TEST(test_table_lookup_null_table);
+    RUN_TEST(test_table_lookup_empty_table);
+    RUN_TEST(test_table_lookup_no_matching_route);
+    RUN_TEST(test_table_lookup_exact_prefix_match);
+    RUN_TEST(test_table_lookup_longest_prefix_match);
+    RUN_TEST(test_table_lookup_longest_prefix_independent_of_insertion_order);
+    RUN_TEST(test_table_lookup_default_route);
+    RUN_TEST(test_table_lookup_prefers_specific_route_over_default);
+    RUN_TEST(test_table_lookup_route_for_network_address);
   return UNITY_END();
 }
