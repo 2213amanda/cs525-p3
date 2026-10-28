@@ -370,7 +370,7 @@ void test_cidr_parse_host_bits_set(void)
     TEST_ASSERT_EQUAL_UINT8(25, block.prefix);
 }
 
-//cidr_parse tests
+//cidr_format tests
 
 void test_cidr_format_null_output(void)
 {
@@ -443,49 +443,563 @@ void test_cidr_format_preserves_host_bits(void)
     TEST_ASSERT_EQUAL_STRING("132.178.227.11/25", out);
 }
 
+//cidr_mask tests
+
+void test_cidr_mask_prefix_zero(void)
+{
+    /* Covers prefix == 0: true branch. */
+    TEST_ASSERT_EQUAL_HEX32(0x00000000, cidr_mask(0));
+}
+
+void test_cidr_mask_prefix_one(void)
+{
+    /* Covers prefix > 32: false, prefix == 0: false. */
+    TEST_ASSERT_EQUAL_HEX32(0x80000000, cidr_mask(1));
+}
+
+void test_cidr_mask_prefix_eight(void)
+{
+    TEST_ASSERT_EQUAL_HEX32(0xFF000000, cidr_mask(8));
+}
+
+void test_cidr_mask_prefix_sixteen(void)
+{
+    TEST_ASSERT_EQUAL_HEX32(0xFFFF0000, cidr_mask(16));
+}
+
+void test_cidr_mask_prefix_twenty_four(void)
+{
+    TEST_ASSERT_EQUAL_HEX32(0xFFFFFF00, cidr_mask(24));
+}
+
+void test_cidr_mask_prefix_thirty_one(void)
+{
+    TEST_ASSERT_EQUAL_HEX32(0xFFFFFFFE, cidr_mask(31));
+}
+
+void test_cidr_mask_prefix_thirty_two(void)
+{
+    /* Covers prefix == 0: false and the maximum valid prefix. */
+    TEST_ASSERT_EQUAL_HEX32(0xFFFFFFFF, cidr_mask(32));
+}
+
+void test_cidr_mask_prefix_above_thirty_two(void)
+{
+    /* Covers prefix > 32: true branch. */
+    TEST_ASSERT_EQUAL_HEX32(0xFFFFFFFF, cidr_mask(33));
+    TEST_ASSERT_EQUAL_HEX32(0xFFFFFFFF, cidr_mask(255));
+}
+
+//cidr_network tests
+
+void test_cidr_network_typical_subnet(void)
+{
+    cidr_t block = {0xC0A80164, 24}; /* 192.168.1.100/24 */
+
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80100, cidr_network(block));
+}
+
+void test_cidr_network_prefix_zero(void)
+{
+    cidr_t block = {0xC0A80164, 0};
+
+    TEST_ASSERT_EQUAL_HEX32(0x00000000, cidr_network(block));
+}
+
+void test_cidr_network_prefix_thirty_two(void)
+{
+    cidr_t block = {0xC0A80164, 32};
+
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80164, cidr_network(block));
+}
+
+void test_cidr_network_host_bits_already_zero(void)
+{
+    cidr_t block = {0xC0A80100, 24};
+
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80100, cidr_network(block));
+}
+
+
+// cidr_broadcast tests
+
+void test_cidr_broadcast_typical_subnet(void)
+{
+    cidr_t block = {0xC0A80164, 24}; /* 192.168.1.100/24 */
+
+    TEST_ASSERT_EQUAL_HEX32(0xC0A801FF, cidr_broadcast(block));
+}
+
+void test_cidr_broadcast_prefix_zero(void)
+{
+    cidr_t block = {0xC0A80164, 0};
+
+    TEST_ASSERT_EQUAL_HEX32(0xFFFFFFFF, cidr_broadcast(block));
+}
+
+void test_cidr_broadcast_prefix_thirty_two(void)
+{
+    cidr_t block = {0xC0A80164, 32};
+
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80164, cidr_broadcast(block));
+}
+
+void test_cidr_broadcast_prefix_thirty_one(void)
+{
+    cidr_t block = {0xC0A80164, 31};
+
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80165, cidr_broadcast(block));
+}
+
+
+// cidr_first_host tests
+
+void test_cidr_first_host_typical_subnet(void)
+{
+    cidr_t block = {0xC0A80164, 24};
+
+    /* Network is 192.168.1.0; first usable host is .1. */
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80101, cidr_first_host(block));
+}
+
+void test_cidr_first_host_prefix_zero(void)
+{
+    cidr_t block = {0xC0A80164, 0};
+
+    /* /0 uses the ordinary network + 1 branch. */
+    TEST_ASSERT_EQUAL_HEX32(0x00000001, cidr_first_host(block));
+}
+
+void test_cidr_first_host_prefix_thirty_one(void)
+{
+    cidr_t block = {0xC0A80164, 31};
+
+    /* /31: both addresses are usable. */
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80164, cidr_first_host(block));
+}
+
+void test_cidr_first_host_prefix_thirty_two(void)
+{
+    cidr_t block = {0xC0A80164, 32};
+
+    /* /32: the single address is the first host. */
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80164, cidr_first_host(block));
+}
+
+
+// cidr_last_host tests
+
+void test_cidr_last_host_typical_subnet(void)
+{
+    cidr_t block = {0xC0A80164, 24};
+
+    /* Broadcast is 192.168.1.255; last usable host is .254. */
+    TEST_ASSERT_EQUAL_HEX32(0xC0A801FE, cidr_last_host(block));
+}
+
+void test_cidr_last_host_prefix_zero(void)
+{
+    cidr_t block = {0xC0A80164, 0};
+
+    /* /0 uses the ordinary broadcast - 1 branch. */
+    TEST_ASSERT_EQUAL_HEX32(0xFFFFFFFE, cidr_last_host(block));
+}
+
+void test_cidr_last_host_prefix_thirty_one(void)
+{
+    cidr_t block = {0xC0A80164, 31};
+
+    /* /31: the broadcast address is also usable. */
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80165, cidr_last_host(block));
+}
+
+void test_cidr_last_host_prefix_thirty_two(void)
+{
+    cidr_t block = {0xC0A80164, 32};
+
+    /* /32: the single address is the last host. */
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80164, cidr_last_host(block));
+}
+
+// cidr_host_count tests
+
+/* prefix > 32: false; prefix == 32: false; prefix == 31: false */
+void test_cidr_host_count_prefix_zero(void)
+{
+    cidr_t block = {0x00000000, 0};
+
+    /* 2^32 addresses, minus network and broadcast. */
+    TEST_ASSERT_EQUAL_UINT64(4294967294ULL,
+                             cidr_host_count(block));
+}
+
+/* Ordinary subnet: exercises the general calculation. */
+void test_cidr_host_count_prefix_twenty_four(void)
+{
+    cidr_t block = {0xC0A80100, 24};
+
+    TEST_ASSERT_EQUAL_UINT64(254, cidr_host_count(block));
+}
+
+/* prefix == 31: true */
+void test_cidr_host_count_prefix_thirty_one(void)
+{
+    cidr_t block = {0xC0A80100, 31};
+
+    TEST_ASSERT_EQUAL_UINT64(2, cidr_host_count(block));
+}
+
+/* prefix == 32: true */
+void test_cidr_host_count_prefix_thirty_two(void)
+{
+    cidr_t block = {0xC0A80101, 32};
+
+    TEST_ASSERT_EQUAL_UINT64(1, cidr_host_count(block));
+}
+
+/* prefix > 32: true; clamped to 32, then prefix == 32: true */
+void test_cidr_host_count_prefix_above_thirty_two(void)
+{
+    cidr_t block = {0xC0A80101, 33};
+
+    TEST_ASSERT_EQUAL_UINT64(1, cidr_host_count(block));
+}
+
+/* Also test the largest possible uint8_t prefix value. */
+void test_cidr_host_count_prefix_maximum(void)
+{
+    cidr_t block = {0xC0A80101, 255};
+
+    TEST_ASSERT_EQUAL_UINT64(1, cidr_host_count(block));
+}
+
+// cidr_contains tests
+
+/* Address is inside the subnet. */
+void test_cidr_contains_address_inside_subnet(void)
+{
+    cidr_t block = {0xC0A80164, 24}; /* 192.168.1.100/24 */
+
+    TEST_ASSERT_TRUE(cidr_contains(block, 0xC0A80101));
+}
+
+/* Address equals the network address. */
+void test_cidr_contains_network_address(void)
+{
+    cidr_t block = {0xC0A80100, 24};
+
+    TEST_ASSERT_TRUE(cidr_contains(block, 0xC0A80100));
+}
+
+/* Address equals the broadcast address. */
+void test_cidr_contains_broadcast_address(void)
+{
+    cidr_t block = {0xC0A80100, 24};
+
+    TEST_ASSERT_TRUE(cidr_contains(block, 0xC0A801FF));
+}
+
+/* Address is outside the subnet: comparison evaluates false. */
+void test_cidr_contains_address_outside_subnet(void)
+{
+    cidr_t block = {0xC0A80100, 24};
+
+    TEST_ASSERT_FALSE(cidr_contains(block, 0xC0A80201));
+}
+
+/* /0 contains every IPv4 address. */
+void test_cidr_contains_prefix_zero(void)
+{
+    cidr_t block = {0xC0A80100, 0};
+
+    TEST_ASSERT_TRUE(cidr_contains(block, 0xFFFFFFFF));
+}
+
+/* /32 contains only its one exact address. */
+void test_cidr_contains_prefix_thirty_two(void)
+{
+    cidr_t block = {0xC0A80101, 32};
+
+    TEST_ASSERT_TRUE(cidr_contains(block, 0xC0A80101));
+    TEST_ASSERT_FALSE(cidr_contains(block, 0xC0A80102));
+}
+
+// cidr_is_network tests
+
+/* Address already equals the network address. */
+void test_cidr_is_network_true(void)
+{
+    cidr_t block = {0xC0A80100, 24}; /* 192.168.1.0/24 */
+
+    TEST_ASSERT_TRUE(cidr_is_network(block));
+}
+
+/* Host bits are set, so this is not a network address. */
+void test_cidr_is_network_false(void)
+{
+    cidr_t block = {0xC0A80164, 24}; /* 192.168.1.100/24 */
+
+    TEST_ASSERT_FALSE(cidr_is_network(block));
+}
+
+/* Every address is aligned for a /0 network. */
+void test_cidr_is_network_prefix_zero(void)
+{
+    cidr_t block = {0x00000000, 0};
+
+    TEST_ASSERT_TRUE(cidr_is_network(block));
+}
+
+void test_cidr_is_network_prefix_zero_with_host_bits(void)
+{
+    cidr_t block = {0xC0A80164, 0};
+
+    TEST_ASSERT_FALSE(cidr_is_network(block));
+}
+
+/* Every address is a valid /32 network. */
+void test_cidr_is_network_prefix_thirty_two(void)
+{
+    cidr_t block = {0xC0A80164, 32};
+
+    TEST_ASSERT_TRUE(cidr_is_network(block));
+}
+
+/* /31 network address must have its lowest bit clear. */
+void test_cidr_is_network_prefix_thirty_one_true(void)
+{
+    cidr_t block = {0xC0A80164, 31};
+
+    TEST_ASSERT_TRUE(cidr_is_network(block));
+}
+
+void test_cidr_is_network_prefix_thirty_one_false(void)
+{
+    cidr_t block = {0xC0A80165, 31};
+
+    TEST_ASSERT_FALSE(cidr_is_network(block));
+}
+
+// cidr_subnet tests
+
+/* out == NULL: true */
+void test_cidr_subnet_null_output(void)
+{
+    cidr_t block = {0xC0A80000, 16};
+
+    TEST_ASSERT_FALSE(cidr_subnet(block, 4, 0, NULL));
+}
+
+/* Input address has host bits set: network validation fails. */
+void test_cidr_subnet_input_not_network(void)
+{
+    cidr_t block = {0xC0A80101, 24};
+    cidr_t out = {0x12345678, 12};
+    cidr_t original = out;
+
+    TEST_ASSERT_FALSE(cidr_subnet(block, 4, 0, &out));
+    TEST_ASSERT_EQUAL_HEX32(original.addr, out.addr);
+    TEST_ASSERT_EQUAL_UINT8(original.prefix, out.prefix);
+}
+
+/* n == 0: true */
+void test_cidr_subnet_zero_count(void)
+{
+    cidr_t block = {0xC0A80000, 16};
+    cidr_t out = {0x12345678, 12};
+
+    TEST_ASSERT_FALSE(cidr_subnet(block, 0, 0, &out));
+    TEST_ASSERT_EQUAL_HEX32(0x12345678, out.addr);
+    TEST_ASSERT_EQUAL_UINT8(12, out.prefix);
+}
+
+/* n != 0, but n is not a power of two. */
+void test_cidr_subnet_count_not_power_of_two(void)
+{
+    cidr_t block = {0xC0A80000, 16};
+    cidr_t out = {0x12345678, 12};
+
+    TEST_ASSERT_FALSE(cidr_subnet(block, 3, 0, &out));
+    TEST_ASSERT_EQUAL_HEX32(0x12345678, out.addr);
+    TEST_ASSERT_EQUAL_UINT8(12, out.prefix);
+}
+
+/* n is a power of two, but i >= n. */
+void test_cidr_subnet_index_out_of_range(void)
+{
+    cidr_t block = {0xC0A80000, 16};
+    cidr_t out = {0x12345678, 12};
+
+    TEST_ASSERT_FALSE(cidr_subnet(block, 4, 4, &out));
+    TEST_ASSERT_EQUAL_HEX32(0x12345678, out.addr);
+    TEST_ASSERT_EQUAL_UINT8(12, out.prefix);
+}
+
+/* new_prefix > 32: true */
+void test_cidr_subnet_prefix_overflow(void)
+{
+    cidr_t block = {0xC0A80100, 31};
+    cidr_t out = {0x12345678, 12};
+
+    /* Splitting a /31 into two subnets would require /32;
+       n=4 requires two extra bits, producing /33. */
+    TEST_ASSERT_FALSE(cidr_subnet(block, 4, 0, &out));
+    TEST_ASSERT_EQUAL_HEX32(0x12345678, out.addr);
+    TEST_ASSERT_EQUAL_UINT8(12, out.prefix);
+}
+
+/* Successful case with n == 1: loop body never executes. */
+void test_cidr_subnet_one_subnet(void)
+{
+    cidr_t block = {0xC0A80000, 16};
+    cidr_t out = {0, 0};
+
+    TEST_ASSERT_TRUE(cidr_subnet(block, 1, 0, &out));
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80000, out.addr);
+    TEST_ASSERT_EQUAL_UINT8(16, out.prefix);
+}
+
+/* Successful case with n > 1: loop body executes. */
+void test_cidr_subnet_four_subnets(void)
+{
+    cidr_t block = {0xC0A80000, 16};
+    cidr_t out = {0, 0};
+
+    TEST_ASSERT_TRUE(cidr_subnet(block, 4, 0, &out));
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80000, out.addr);
+    TEST_ASSERT_EQUAL_UINT8(18, out.prefix);
+}
+
+/* Verify subnet index affects the address correctly. */
+void test_cidr_subnet_nonzero_index(void)
+{
+    cidr_t block = {0xC0A80000, 16};
+    cidr_t out = {0, 0};
+
+    TEST_ASSERT_TRUE(cidr_subnet(block, 4, 2, &out));
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80000 + 2 * 16384, out.addr);
+    TEST_ASSERT_EQUAL_UINT8(18, out.prefix);
+}
+
+/* Largest valid subnet count for a /30: four /32 subnets. */
+void test_cidr_subnet_prefix_thirty_two(void)
+{
+    cidr_t block = {0xC0A80100, 30};
+    cidr_t out = {0, 0};
+
+    TEST_ASSERT_TRUE(cidr_subnet(block, 4, 3, &out));
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80103, out.addr);
+    TEST_ASSERT_EQUAL_UINT8(32, out.prefix);
+}
+
+/* new_prefix == 32: false branch of new_prefix > 32. */
+void test_cidr_subnet_exact_prefix_limit(void)
+{
+    cidr_t block = {0xC0A80100, 31};
+    cidr_t out = {0, 0};
+
+    TEST_ASSERT_TRUE(cidr_subnet(block, 2, 1, &out));
+    TEST_ASSERT_EQUAL_HEX32(0xC0A80101, out.addr);
+    TEST_ASSERT_EQUAL_UINT8(32, out.prefix);
+}
+
 int main(void) {
-  UNITY_BEGIN();
-  RUN_TEST(test_ip_parse_null_text);
-  RUN_TEST(test_ip_parse_null_addr);
-  RUN_TEST(test_ip_parse_empty_string);
-  RUN_TEST(test_ip_parse_first_character_not_digit);
-  RUN_TEST(test_ip_parse_leading_zero);
-  RUN_TEST(test_ip_parse_octet_exceeds_255);
-  RUN_TEST(test_ip_parse_missing_octet);
-  RUN_TEST(test_ip_parse_missing_period);
-  RUN_TEST(test_ip_parse_extra_period);
-  RUN_TEST(test_ip_parse_trailing_characters);
-  RUN_TEST(test_ip_parse_valid_address);
-  RUN_TEST(test_ip_parse_output_unchanged_on_failure);
-  RUN_TEST(test_ip_format_null_output);
-  RUN_TEST(test_ip_format_zero_address);
-  RUN_TEST(test_ip_format_broadcast_address);
-  RUN_TEST(test_ip_format_typical_address);
-  RUN_TEST(test_ip_format_single_digit_octets);
-  RUN_TEST(test_ip_format_mixed_octet_sizes);
-  RUN_TEST(test_cidr_parse_null_text);
-  RUN_TEST(test_cidr_parse_null_block);
-  RUN_TEST(test_cidr_parse_missing_slash);
-  RUN_TEST(test_cidr_parse_multiple_slashes);
-  RUN_TEST(test_cidr_parse_empty_address);
-  RUN_TEST(test_cidr_parse_address_too_long);
-  RUN_TEST(test_cidr_parse_invalid_address);
-  RUN_TEST(test_cidr_parse_valid_address);
-  RUN_TEST(test_cidr_parse_prefix_not_digit);
-  RUN_TEST(test_cidr_parse_prefix_leading_zero);
-  RUN_TEST(test_cidr_parse_prefix_over_32);
-  RUN_TEST(test_cidr_parse_prefix_loop_multiple_digits);
-  RUN_TEST(test_cidr_parse_prefix_zero);
-  RUN_TEST(test_cidr_parse_trailing_characters);
-  RUN_TEST(test_cidr_parse_no_trailing_characters);
-  RUN_TEST(test_cidr_parse_output_unchanged_on_failure);
-  RUN_TEST(test_cidr_parse_host_bits_set);
-  RUN_TEST(test_cidr_format_null_output);
-  RUN_TEST(test_cidr_format_prefix_within_range);
-  RUN_TEST(test_cidr_format_prefix_zero);
-  RUN_TEST(test_cidr_format_prefix_32);
-  RUN_TEST(test_cidr_format_prefix_above_32);
-  RUN_TEST(test_cidr_format_large_prefix_clamped_to_32);
-  RUN_TEST(test_cidr_format_preserves_host_bits);
+    UNITY_BEGIN();
+    RUN_TEST(test_ip_parse_null_text);
+    RUN_TEST(test_ip_parse_null_addr);
+    RUN_TEST(test_ip_parse_empty_string);
+    RUN_TEST(test_ip_parse_first_character_not_digit);
+    RUN_TEST(test_ip_parse_leading_zero);
+    RUN_TEST(test_ip_parse_octet_exceeds_255);
+    RUN_TEST(test_ip_parse_missing_octet);
+    RUN_TEST(test_ip_parse_missing_period);
+    RUN_TEST(test_ip_parse_extra_period);
+    RUN_TEST(test_ip_parse_trailing_characters);
+    RUN_TEST(test_ip_parse_valid_address);
+    RUN_TEST(test_ip_parse_output_unchanged_on_failure);
+    RUN_TEST(test_ip_format_null_output);
+    RUN_TEST(test_ip_format_zero_address);
+    RUN_TEST(test_ip_format_broadcast_address);
+    RUN_TEST(test_ip_format_typical_address);
+    RUN_TEST(test_ip_format_single_digit_octets);
+    RUN_TEST(test_ip_format_mixed_octet_sizes);
+    RUN_TEST(test_cidr_parse_null_text);
+    RUN_TEST(test_cidr_parse_null_block);
+    RUN_TEST(test_cidr_parse_missing_slash);
+    RUN_TEST(test_cidr_parse_multiple_slashes);
+    RUN_TEST(test_cidr_parse_empty_address);
+    RUN_TEST(test_cidr_parse_address_too_long);
+    RUN_TEST(test_cidr_parse_invalid_address);
+    RUN_TEST(test_cidr_parse_valid_address);
+    RUN_TEST(test_cidr_parse_prefix_not_digit);
+    RUN_TEST(test_cidr_parse_prefix_leading_zero);
+    RUN_TEST(test_cidr_parse_prefix_over_32);
+    RUN_TEST(test_cidr_parse_prefix_loop_multiple_digits);
+    RUN_TEST(test_cidr_parse_prefix_zero);
+    RUN_TEST(test_cidr_parse_trailing_characters);
+    RUN_TEST(test_cidr_parse_no_trailing_characters);
+    RUN_TEST(test_cidr_parse_output_unchanged_on_failure);
+    RUN_TEST(test_cidr_parse_host_bits_set);
+    RUN_TEST(test_cidr_format_null_output);
+    RUN_TEST(test_cidr_format_prefix_within_range);
+    RUN_TEST(test_cidr_format_prefix_zero);
+    RUN_TEST(test_cidr_format_prefix_32);
+    RUN_TEST(test_cidr_format_prefix_above_32);
+    RUN_TEST(test_cidr_format_large_prefix_clamped_to_32);
+    RUN_TEST(test_cidr_format_preserves_host_bits);
+    RUN_TEST(test_cidr_mask_prefix_zero);
+    RUN_TEST(test_cidr_mask_prefix_one);
+    RUN_TEST(test_cidr_mask_prefix_eight);
+    RUN_TEST(test_cidr_mask_prefix_sixteen);
+    RUN_TEST(test_cidr_mask_prefix_twenty_four);
+    RUN_TEST(test_cidr_mask_prefix_thirty_one);
+    RUN_TEST(test_cidr_mask_prefix_thirty_two);
+    RUN_TEST(test_cidr_mask_prefix_above_thirty_two);
+    RUN_TEST(test_cidr_network_typical_subnet);
+    RUN_TEST(test_cidr_network_prefix_zero);
+    RUN_TEST(test_cidr_network_prefix_thirty_two);
+    RUN_TEST(test_cidr_network_host_bits_already_zero);
+    RUN_TEST(test_cidr_broadcast_typical_subnet);
+    RUN_TEST(test_cidr_broadcast_prefix_zero);
+    RUN_TEST(test_cidr_broadcast_prefix_thirty_two);
+    RUN_TEST(test_cidr_broadcast_prefix_thirty_one);
+    RUN_TEST(test_cidr_first_host_typical_subnet);
+    RUN_TEST(test_cidr_first_host_prefix_zero);
+    RUN_TEST(test_cidr_first_host_prefix_thirty_one);
+    RUN_TEST(test_cidr_first_host_prefix_thirty_two);
+    RUN_TEST(test_cidr_last_host_typical_subnet);
+    RUN_TEST(test_cidr_last_host_prefix_zero);
+    RUN_TEST(test_cidr_last_host_prefix_thirty_one);
+    RUN_TEST(test_cidr_last_host_prefix_thirty_two);
+    RUN_TEST(test_cidr_host_count_prefix_zero);
+    RUN_TEST(test_cidr_host_count_prefix_twenty_four);
+    RUN_TEST(test_cidr_host_count_prefix_thirty_one);
+    RUN_TEST(test_cidr_host_count_prefix_thirty_two);
+    RUN_TEST(test_cidr_host_count_prefix_above_thirty_two);
+    RUN_TEST(test_cidr_host_count_prefix_maximum);
+    RUN_TEST(test_cidr_contains_address_inside_subnet);
+    RUN_TEST(test_cidr_contains_network_address);
+    RUN_TEST(test_cidr_contains_broadcast_address);
+    RUN_TEST(test_cidr_contains_address_outside_subnet);
+    RUN_TEST(test_cidr_contains_prefix_zero);
+    RUN_TEST(test_cidr_contains_prefix_thirty_two);
+    RUN_TEST(test_cidr_is_network_true);
+    RUN_TEST(test_cidr_is_network_false);
+    RUN_TEST(test_cidr_is_network_prefix_zero);
+    RUN_TEST(test_cidr_is_network_prefix_zero_with_host_bits);
+    RUN_TEST(test_cidr_is_network_prefix_thirty_two);
+    RUN_TEST(test_cidr_is_network_prefix_thirty_one_true);
+    RUN_TEST(test_cidr_is_network_prefix_thirty_one_false);
+    RUN_TEST(test_cidr_subnet_null_output);
+    RUN_TEST(test_cidr_subnet_input_not_network);
+    RUN_TEST(test_cidr_subnet_zero_count);
+    RUN_TEST(test_cidr_subnet_count_not_power_of_two);
+    RUN_TEST(test_cidr_subnet_index_out_of_range);
+    RUN_TEST(test_cidr_subnet_prefix_overflow);
+    RUN_TEST(test_cidr_subnet_one_subnet);
+    RUN_TEST(test_cidr_subnet_four_subnets);
+    RUN_TEST(test_cidr_subnet_nonzero_index);
+    RUN_TEST(test_cidr_subnet_prefix_thirty_two);
+    RUN_TEST(test_cidr_subnet_exact_prefix_limit);
   return UNITY_END();
 }
